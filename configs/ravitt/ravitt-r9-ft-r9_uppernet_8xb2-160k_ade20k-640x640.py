@@ -6,7 +6,8 @@ crop_size = (640, 640)
 data_preprocessor = dict(size=crop_size)
 model = dict(
     data_preprocessor=data_preprocessor,
-    pretrained='pretrain/ravitt_1.0.pth',
+    backbone=dict(ravitt_t=9.0, ravitt_mode='full'),
+    pretrained='pretrain/ravitt_9.0.pth',
     test_cfg=dict(mode='slide', crop_size=(640, 640), stride=(426, 426)))
 
 optim_wrapper = dict(
