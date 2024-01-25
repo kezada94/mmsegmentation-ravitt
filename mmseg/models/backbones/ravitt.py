@@ -201,9 +201,20 @@ class RaViTT(BaseModule):
                  init_values=0.1,
                  init_cfg=None,
                  out_indices=[3, 5, 7, 11]):
-        super().__init__()
+        super().__init__(init_cfg=init_cfg)
 
-        npatch = round(((img_size // patch_size)**2) * t)
+        assert not (init_cfg and pretrained), \
+            'init_cfg and pretrained cannot be set at the same time'
+        if isinstance(pretrained, str):
+            warnings.warn('DeprecationWarning: pretrained is deprecated, '
+                          'please use "init_cfg" instead')
+            self.init_cfg = dict(type='Pretrained', checkpoint=pretrained)
+        elif pretrained is not None:
+            raise TypeError('pretrained must be a str or None')
+
+
+        npatch = round(((img_size // patch_size)**2) * ravitt_t)
+        t = ravitt_t
         self.model = create_model(
             model_path, img_size=img_size, patch_size=patch_size, in_chans=in_channels)
 
@@ -249,25 +260,8 @@ class RaViTT(BaseModule):
         self.model.norm = None
         self.model.fc_norm = None
 
-    def fix_init_weight(self):
-        def rescale(param, layer_id):
-            param.div_(math.sqrt(2.0 * layer_id))
-
-        for layer_id, layer in enumerate(self.blocks):
-            rescale(layer.attn.proj.weight.data, layer_id + 1)
-            rescale(layer.mlp.fc2.weight.data, layer_id + 1)
-
-    def _init_weights(self, m):
-        if isinstance(m, nn.Linear):
-            trunc_normal_(m.weight, std=.02)
-            if isinstance(m, nn.Linear) and m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-        elif isinstance(m, nn.LayerNorm):
-            nn.init.constant_(m.bias, 0)
-            nn.init.constant_(m.weight, 1.0)
 
     def init_weights(self):
-
         def _init_weights(m):
             if isinstance(m, nn.Linear):
                 trunc_normal_(m.weight, std=.02)
@@ -279,12 +273,32 @@ class RaViTT(BaseModule):
 
         self.apply(_init_weights)
 
-        if (isinstance(self.init_cfg, dict)
-                and self.init_cfg.get('type') == 'Pretrained'):
-            checkpoint = _load_checkpoint(
-                self.init_cfg['checkpoint'], logger=None, map_location='cpu')
-            state_dict = self.resize_rel_pos_embed(checkpoint)
-            self.load_state_dict(state_dict, False)
+        if (isinstance(self.init_cfg, dict) and self.init_cfg.get('type') == 'Pretrained'):
+            checkpoint = torch.load(self.init_cfg['checkpoint'], map_location='cpu')
+
+            checkpoint_model = checkpoint['model']
+            state_dict = self.state_dict()
+            print("LOADING A PRETRAINEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEED")
+            pos_embed_checkpoint = checkpoint_model['pos_embed']
+            embedding_size = pos_embed_checkpoint.shape[-1]
+            num_patches = self.model.patch_embed.num_patches
+            num_extra_tokens = self.model.pos_embed.shape[-2] - num_patches
+            # height (== width) for the checkpoint position embedding
+            orig_size = int((pos_embed_checkpoint.shape[-2] - num_extra_tokens) ** 0.5)
+            # height (== width) for the new position embedding
+            new_size = int(num_patches ** 0.5)
+            # class_token and dist_token are kept unchanged
+            extra_tokens = pos_embed_checkpoint[:, :num_extra_tokens]
+            # only the position tokens are interpolated
+            pos_tokens = pos_embed_checkpoint[:, num_extra_tokens:]
+            pos_tokens = pos_tokens.reshape(-1, orig_size, orig_size, embedding_size).permute(0, 3, 1, 2)
+            pos_tokens = torch.nn.functional.interpolate(
+                pos_tokens, size=(new_size, new_size), mode='bicubic', align_corners=False)
+            pos_tokens = pos_tokens.permute(0, 2, 3, 1).flatten(1, 2)
+            new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)
+            checkpoint_model['pos_embed'] = new_pos_embed
+            
+            self.load_state_dict(checkpoint_model, strict=False)
         elif self.init_cfg is not None:
             super().init_weights()
         else:
