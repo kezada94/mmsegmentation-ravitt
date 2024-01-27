@@ -148,10 +148,8 @@ def new_forward(self, x):
     if self.training or self.isFull:
         x_rv, pos = self.ravitt(x)  # embed ravitt
         # add positional encoding ravitt
-        x_rv = x_rv + self.ravitt.overlap_positional_encoding(
-            x_rv.shape[0], x_rv.shape[1], x_rv.shape[2], pos)
-        slice_to_append = x_og[:, 0, :].unsqueeze(
-            1)  # Shape will be (256, 1, 128)
+        x_rv = x_rv + self.ravitt.overlap_positional_encoding(x_rv.shape[0], x_rv.shape[1], x_rv.shape[2], pos)
+        slice_to_append = x_og[:, 0, :].unsqueeze(1)  # Shape will be (256, 1, 128)
 
         x_rv = torch.cat((slice_to_append, x_rv), dim=1)
         x = self.ravitt_func(x_og, x_rv)
@@ -165,11 +163,16 @@ def new_forward(self, x):
     else:
         for i, block in enumerate(self.blocks):
             x = block(x)
+            if i == len(self.blocks) - 1:
+                x = self.norm(x)
+            
             if i in self.out_indices:
-                xp = x[:, 1:, :]
-                xp = self.reshaper(xp)
-                features.append(xp.contiguous())
-
+                # Remove class token and reshape token for decoder head
+                out = x[:, 1:]
+                B, _, C = out.shape
+                out = out.reshape(B, self.hw_shape[0], self.hw_shape[1], C).permute(0, 3, 1, 2).contiguous()
+                out = [out, x[:, 0]]
+                features.append(out)
     return features
 
 
@@ -242,6 +245,7 @@ class RaViTT(BaseModule):
 
         self.model.reshaper = Rearrange(
             'b (th tw) e -> b e th tw', th=(img_size // patch_size), tw=(img_size // patch_size))
+        self.model.hw_shape = ((img_size // patch_size), (img_size // patch_size))
         self.num_classes = num_classes
         self.model.num_classes = num_classes
         self.out_indices = out_indices
@@ -257,7 +261,6 @@ class RaViTT(BaseModule):
 
         self.model.head = None
         self.model.head_drop = None
-        self.model.norm = None
         self.model.fc_norm = None
 
 
